@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>合成大樹豐</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: none;
+        }
+
+        body {
+            background-color: #f7f1e3;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        #score-board {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        #game-container {
+            position: relative;
+            width: 360px;
+            height: 600px;
+            background-color: #ffeaa7;
+            border: 4px solid #d63031;
+            border-radius: 8px;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.15);
+            overflow: hidden;
+        }
+
+        #danger-line {
+            position: absolute;
+            top: 100px;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            border-top: 2px dashed #ff7675;
+            z-index: 10;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #game-over {
+            display: none;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 20;
+        }
+
+        #game-over h1 {
+            font-size: 32px;
+            margin-bottom: 20px;
+            color: #ff7675;
+        }
+
+        #restart-btn {
+            padding: 10px 20px;
+            font-size: 18px;
+            background-color: #00b894;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        #restart-btn:hover {
+            background-color: #55efc4;
+            color: #2d3436;
+        }
+
+        #game-title {
+            font-size: 28px;
+            font-weight: bold;
+            color: #d63031;
+            margin-bottom: 6px;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
+
+    <h1 id="game-title">合成大樹豐</h1>
+    <div id="score-board">得分：<span id="score">0</span></div>
+
+    <div id="game-container">
+        <div id="danger-line"></div>
+        <div id="game-over">
+            <h1>大樹豐合成失敗！</h1>
+            <button id="restart-btn" onclick="restartGame()">再試一次</button>
+        </div>
+    </div>
+
+    <script>
+        // Image configurations pointing to folder "wsf" with files "wsf 1.png" to "wsf 11.png"
+        const FRUITS = [
+            { level: 0, name: 'wsf1',  src: './wsf/wsf 1.png',  radius: 16,  score: 2 },
+            { level: 1, name: 'wsf2',  src: './wsf/wsf 2.png',  radius: 24,  score: 4 },
+            { level: 2, name: 'wsf3',  src: './wsf/wsf 3.png',  radius: 32,  score: 8 },
+            { level: 3, name: 'wsf4',  src: './wsf/wsf 4.png',  radius: 40,  score: 16 },
+            { level: 4, name: 'wsf5',  src: './wsf/wsf 5.png',  radius: 50,  score: 32 },
+            { level: 5, name: 'wsf6',  src: './wsf/wsf 6.png',  radius: 62,  score: 64 },
+            { level: 6, name: 'wsf7',  src: './wsf/wsf 7.png',  radius: 74,  score: 128 },
+            { level: 7, name: 'wsf8',  src: './wsf/wsf 8.png',  radius: 86,  score: 256 },
+            { level: 8, name: 'wsf9',  src: './wsf/wsf 9.png',  radius: 98,  score: 512 },
+            { level: 9, name: 'wsf10', src: './wsf/wsf 10.png', radius: 112, score: 1024 },
+            { level: 10, name: 'wsf11', src: './wsf/wsf 11.png', radius: 128, score: 2048 }
+        ];
+
+        // Automatically detect image sizes and calculate display scaling
+        FRUITS.forEach(fruit => {
+            fruit.scale = (fruit.radius * 2) / 300; // Default fallback scale
+            const img = new Image();
+            img.src = fruit.src;
+            img.onload = () => {
+                fruit.scale = (fruit.radius * 2) / img.naturalWidth;
+            };
+        });
+
+        const { Engine, Render, Runner, Bodies, Composite, Body, Events } = Matter;
+
+        let engine, render, runner;
+        let currentFruit = null;
+        let canDrop = true;
+        let score = 0;
+        let isGameOver = false;
+        let gameOverTimer = null;
+        let isTouching = false;
+
+        const container = document.getElementById('game-container');
+        const width = 360;
+        const height = 600;
+
+        function init() {
+            score = 0;
+            isGameOver = false;
+            canDrop = true;
+            isTouching = false;
+            currentFruit = null;
+            if (gameOverTimer) clearTimeout(gameOverTimer);
+            gameOverTimer = null;
+
+            document.getElementById('score').innerText = score;
+            document.getElementById('game-over').style.display = 'none';
+
+            container.querySelectorAll('canvas').forEach(c => c.remove());
+
+            engine = Engine.create({ constraintIterations: 3 });
+
+            render = Render.create({
+                element: container,
+                engine: engine,
+                options: {
+                    width: width,
+                    height: height,
+                    wireframes: false,
+                    background: '#ffeaa7'
+                }
+            });
+
+            Render.run(render);
+            runner = Runner.create();
+            Runner.run(runner, engine);
+
+            const wallOptions = { isStatic: true, render: { fillStyle: '#d63031' } };
+            const ground = Bodies.rectangle(width / 2, height + 20, width, 50, wallOptions);
+            const leftWall = Bodies.rectangle(-20, height / 2, 50, height * 2, wallOptions);
+            const rightWall = Bodies.rectangle(width + 20, height / 2, 50, height * 2, wallOptions);
+
+            Composite.add(engine.world, [ground, leftWall, rightWall]);
+
+            spawnFruit();
+
+            Events.on(engine, 'collisionStart', handleCollision);
+            Events.on(engine, 'afterUpdate', checkGameOver);
+        }
+
+        function spawnFruit() {
+            if (isGameOver) return;
+
+            // Spawn random fruit from tier 1 to 4 (index 0 to 3)
+            const randomIndex = Math.floor(Math.random() * 4);
+            const fruitData = FRUITS[randomIndex];
+
+            currentFruit = Bodies.circle(width / 2, 50, fruitData.radius, {
+                isStatic: true,
+                isSensor: true,
+                render: {
+                    sprite: {
+                        texture: fruitData.src,
+                        xScale: fruitData.scale,
+                        yScale: fruitData.scale
+                    }
+                },
+                plugin: { level: randomIndex }
+            });
+
+            Composite.add(engine.world, currentFruit);
+            canDrop = true;
+        }
+
+        function moveFruit(e) {
+            if (!currentFruit) return;
+            const rect = container.getBoundingClientRect();
+            let x = e.clientX - rect.left;
+
+            const radius = FRUITS[currentFruit.plugin.level].radius;
+            x = Math.max(radius, Math.min(width - radius, x));
+
+            Body.setPosition(currentFruit, { x: x, y: 50 });
+        }
+
+        container.addEventListener('pointerdown', (e) => {
+            if (!canDrop || !currentFruit || isGameOver) return;
+            isTouching = true;
+            moveFruit(e);
+        });
+
+        container.addEventListener('pointermove', (e) => {
+            if (!isTouching || !canDrop || !currentFruit || isGameOver) return;
+            moveFruit(e);
+        });
+
+        window.addEventListener('pointerup', (e) => {
+            if (!isTouching || !canDrop || !currentFruit || isGameOver) return;
+            isTouching = false;
+            canDrop = false;
+
+            currentFruit.isSensor = false;
+            Body.setStatic(currentFruit, false);
+            currentFruit = null;
+
+            setTimeout(() => {
+                spawnFruit();
+            }, 800);
+        });
+
+        function handleCollision(event) {
+            const pairs = event.pairs;
+
+            pairs.forEach(pair => {
+                const { bodyA, bodyB } = pair;
+
+                // Prevent duplicate processing in the same frame
+                if (bodyA.isMerging || bodyB.isMerging) return;
+
+                // Ignore collisions involving static walls or sensor objects
+                if (bodyA.isStatic || bodyB.isStatic || bodyA.isSensor || bodyB.isSensor) return;
+
+                if (
+                    bodyA.plugin && bodyB.plugin &&
+                    bodyA.plugin.level !== undefined &&
+                    bodyA.plugin.level === bodyB.plugin.level
+                ) {
+                    const currentLevel = bodyA.plugin.level;
+
+                    if (currentLevel >= FRUITS.length - 1) return;
+
+                    // Immediately mark both bodies as merging to prevent chain bug
+                    bodyA.isMerging = true;
+                    bodyB.isMerging = true;
+
+                    Composite.remove(engine.world, [bodyA, bodyB]);
+
+                    const newX = (bodyA.position.x + bodyB.position.x) / 2;
+                    const newY = (bodyA.position.y + bodyB.position.y) / 2;
+                    const nextLevel = currentLevel + 1;
+                    const nextFruitData = FRUITS[nextLevel];
+
+                    score += nextFruitData.score;
+                    document.getElementById('score').innerText = score;
+
+                    const newFruit = Bodies.circle(newX, newY, nextFruitData.radius, {
+                        render: {
+                            sprite: {
+                                texture: nextFruitData.src,
+                                xScale: nextFruitData.scale,
+                                yScale: nextFruitData.scale
+                            }
+                        },
+                        plugin: { level: nextLevel },
+                        restitution: 0.2
+                    });
+
+                    Composite.add(engine.world, newFruit);
+                }
+            });
+        }
+
+        function checkGameOver() {
+            if (isGameOver) return;
+
+            const bodies = Composite.allBodies(engine.world);
+            let isOverLine = false;
+
+            for (let body of bodies) {
+                if (!body.isStatic && !body.isSensor && body.position.y < 100 && body.position.y > 60) {
+                    if (Math.abs(body.velocity.y) < 0.2) {
+                        isOverLine = true;
+                        break;
+                    }
+                }
+            }
+
+            if (isOverLine) {
+                if (!gameOverTimer) {
+                    gameOverTimer = setTimeout(() => {
+                        triggerGameOver();
+                    }, 2000);
+                }
+            } else {
+                if (gameOverTimer) {
+                    clearTimeout(gameOverTimer);
+                    gameOverTimer = null;
+                }
+            }
+        }
+
+        function triggerGameOver() {
+            isGameOver = true;
+            document.getElementById('game-over').style.display = 'flex';
+        }
+
+        function restartGame() {
+            Engine.clear(engine);
+            init();
+        }
+
+        init();
+    </script>
+</body>
+</html>
